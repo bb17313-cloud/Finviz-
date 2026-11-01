@@ -1,30 +1,40 @@
-name: Stock Radar Bot
+name: Stock Finviz & SEC Radar
 
 on:
   schedule:
-    - cron: '*/15 * * * 1-5' # يعمل تلقائياً كل 15 دقيقة في أيام التداول
-  workflow_dispatch: # لتشغيله يدوياً متى شئت
+    # 1. الساعة 17:00 بتوقيت السعودية (يوافق 14:00 بتوقيت UTC)
+    - cron: '0 14 * * *'
+    
+    # 2. قبل افتتاح السوق الأمريكي بساعتين (07:30 بتوقيت نيويورك - يعادل تقريباً 11:30 UTC صيفاً / 12:30 UTC شتاءً)
+    # تم اختيار 11:30 UTC كمتوسط تناسبي، ويمكنك تعديله حسب التوقيت الصيفي/الشتوي
+    - cron: '30 11 * * *'
+    
+    # 3. بعد إغلاق السوق الأمريكي بساعة (17:00 بتوقيت نيويورك - يعادل 21:00 UTC صيفاً / 22:00 UTC شتاءً)
+    - cron: '0 21 * * *'
+
+  workflow_dispatch: # يتيح لك تشغيل السكريبت يدوياً في أي وقت من زر Actions في جيت هب
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
-        run: pip install --no-cache-dir cloudscraper pytz requests
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pytz
 
-      - name: Run radar script
+      - name: Run Radar Script
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          PYTHONUNBUFFERED: '1'
         run: |
           python main.py
-
