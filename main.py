@@ -343,26 +343,45 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
         stock_news = fetch_stock_news(ticker)
         sec_summary, cik_val, _ = fetch_sec_filings_only(ticker)
         
+        # قراءة الحجم النسبي والفلوت من بيانات Finviz مباشرة مع التحقق من توفرها الحقيقي
+        rel_vol = str(stock.get('revol', '')).strip() or str(stock.get('rel_volume', '')).strip()
+        float_val = str(stock.get('float', '')).strip()
+        
         tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
         sec_page_url = (
             "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
             f"&CIK={cik_val or ticker}&type=&dateb=&owner=include&count=40"
         )
         
-        message = (
-            f"🚨 <b>تنبيه {alert_no}</b> · {html.escape(session_name)}\n"
-            f"📡 Signal: <b>{html.escape(signal_label)}</b>\n\n"
-            f"🔹 <b>{html.escape(ticker)}</b>\n"
-            f"💵 <code>${price:.2f}</code> · 📈 <code>{html.escape(str(stock.get('change', '-')))}</code>\n"
-            f"📊 Vol: <code>{html.escape(str(stock.get('volume', '-')))}</code>\n"
-            f"🏭 القطاع: <code>{html.escape(str(stock.get('sector', '-')))}</code>\n"
-            f"🏷️ الصناعة: <code>{html.escape(str(stock.get('industry', '-')))}</code>\n"
-            f"📰 أخبار اليوم: {html.escape(stock_news)}\n\n"
-            f"📄 <b>آخر إفصاحات SEC</b>\n"
-            f"{sec_summary}\n\n"
-            f"📈 <a href='{tv_url}'>TradingView</a>\n"
+        # بناء الرسالة الأساسية
+        message_lines = [
+            f"🚨 <b>تنبيه {alert_no}</b> · {html.escape(session_name)}",
+            f"📡 Signal: <b>{html.escape(signal_label)}</b>\n",
+            f"🔹 <b>{html.escape(ticker)}</b>",
+            f"💵 <code>${price:.2f}</code> · 📈 <code>{html.escape(str(stock.get('change', '-')))}</code>",
+            f"📊 Vol: <code>{html.escape(str(stock.get('volume', '-')))}</code>",
+            f"🏭 القطاع: <code>{html.escape(str(stock.get('sector', '-')))}</code>",
+            f"🏷️ الصناعة: <code>{html.escape(str(stock.get('industry', '-')))}</code>",
+            f"📰 أخبار اليوم: {html.escape(stock_news)}"
+        ]
+        
+        # إضافة الحجم النسبي شرط أن يكون حقيقياً ومتوفراً
+        if rel_vol and rel_vol not in ["-", "nan", "None", ""]:
+            message_lines.append(f"🔥 الحجم النسبي: <code>{html.escape(rel_vol)}</code>")
+            
+        # إضافة الفلوت شرط أن يكون حقيقياً ومتوفراً
+        if float_val and float_val not in ["-", "nan", "None", ""]:
+            message_lines.append(f"🌊 الفلوت: <code>{html.escape(float_val)}</code>")
+            
+        # إكمال بقية أجزاء البطاقة
+        message_lines.extend([
+            f"\n📄 <b>آخر إفصاحات SEC</b>",
+            f"{sec_summary}\n",
+            f"📈 <a href='{tv_url}'>TradingView</a>",
             f"🏛️ <a href='{html.escape(sec_page_url)}'>SEC</a>"
-        )
+        ])
+        
+        message = "\n".join(message_lines)
         
         if send_telegram_message(message, parse_mode="HTML"):
             state[key] = {"price": price, "alert_no": alert_no}
