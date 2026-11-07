@@ -156,6 +156,20 @@ def to_float(value):
     except (TypeError, ValueError):
         return None
 
+def get_rel_vol_status(rvol_value):
+    """تحليل قيمة الحجم النسبي وإرجاع التقييمات المختصرة المطلوبة"""
+    val = to_float(rvol_value)
+    if val is None:
+        return ""
+    if val > 3.0:
+        return "استثنائي"
+    elif val >= 1.5:
+        return "اعلى"
+    elif val >= 0.8:
+        return "عادي"
+    else:
+        return "ظعيف"
+
 # بنود نموذج 8-K كما تعرّفها SEC (تأتي مع الإفصاح نفسه في حقل items)
 SEC_8K_ITEMS = {
     "1.01": "اتفاقية جوهرية",
@@ -365,9 +379,11 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
             f"📰 أخبار اليوم: {html.escape(stock_news)}"
         ]
         
-        # إضافة الحجم النسبي شرط أن يكون حقيقياً ومتوفراً
+        # إضافة الحجم النسبي مع التقييم المختصر شرط أن يكون حقيقياً ومتوفراً
         if rel_vol and rel_vol not in ["-", "nan", "None", ""]:
-            message_lines.append(f"🔥 الحجم النسبي: <code>{html.escape(rel_vol)}</code>")
+            status_text = get_rel_vol_status(rel_vol)
+            status_suffix = f" ({status_text})" if status_text else ""
+            message_lines.append(f"🔥 الحجم النسبي: <code>{html.escape(rel_vol)}</code>{status_suffix}")
             
         # إضافة الفلوت شرط أن يكون حقيقياً ومتوفراً
         if float_val and float_val not in ["-", "nan", "None", ""]:
