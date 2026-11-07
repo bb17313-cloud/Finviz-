@@ -54,6 +54,36 @@ class FinvizRowsParser(HTMLParser):
         if self.cell_id is not None:
             self.cell_text.append(data)
 
+class FinvizNewsParser(HTMLParser):
+    """يقرأ جدول الأخبار من صفحة سهم معين في Finviz"""
+    def __init__(self):
+        super().__init__()
+        self.headlines = []
+        self.in_news_table = False
+        self.in_a = False
+        self.current_headline = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "table" and a.get("id") == "news-table":
+            self.in_news_table = True
+        elif self.in_news_table and tag == "a":
+            self.in_a = True
+            self.current_headline = []
+
+    def handle_endtag(self, tag):
+        if tag == "table" and self.in_news_table:
+            self.in_news_table = False
+        elif self.in_a and tag == "a":
+            self.in_a = False
+            headline = "".join(self.current_headline).strip()
+            if headline and headline not in self.headlines:
+                self.headlines.append(headline)
+
+    def handle_data(self, data):
+        if self.in_a:
+            self.current_headline.append(data)
+
 def fetch_finviz_signal(signal, limit=20):
     """جلب أسهم Signal معيّن من صفحة الفاحص مباشرة (بدون مكتبة finviz)"""
     url = f"https://finviz.com/screener.ashx?v=111&s={signal}"
@@ -71,6 +101,23 @@ def fetch_finviz_signal(signal, limit=20):
         seen_keys.add(key)
         rows.append(row)
     return rows[:limit]
+
+def fetch_stock_news(ticker):
+    """جلب أحدث أخبار السهم من صفحة Finviz للشركة مع التحديث الفوري"""
+    try:
+        url = f"https://finviz.com/quote.ashx?t={ticker}"
+        res = requests.get(url, headers=FINVIZ_HEADERS, timeout=10)
+        if res.status_code == 200:
+            parser = FinvizNewsParser()
+            parser.feed(res.text)
+            if parser.headlines:
+                latest_news = parser.headlines[0]
+                if len(latest_news) > 90:
+                    latest_news = latest_news[:87] + "..."
+                return latest_news
+    except Exception as e:
+        print(f"⚠️ خطأ في جلب أخبار السهم لـ {ticker}: {e}")
+    return "لايوجد"
 
 def send_telegram_message(message, parse_mode="Markdown"):
     """إرسال التقرير المنسق إلى التلغرام"""
@@ -291,7 +338,11 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
             continue
         
         alert_no = (last["alert_no"] + 1) if last else 1
+        
+        # جلب أحدث الأخبار وإفصاحات SEC مع كل إرسال لضمان التحديث المستمر
+        stock_news = fetch_stock_news(ticker)
         sec_summary, cik_val, _ = fetch_sec_filings_only(ticker)
+        
         tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
         sec_page_url = (
             "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
@@ -305,7 +356,8 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
             f"💵 <code>${price:.2f}</code> · 📈 <code>{html.escape(str(stock.get('change', '-')))}</code>\n"
             f"📊 Vol: <code>{html.escape(str(stock.get('volume', '-')))}</code>\n"
             f"🏭 القطاع: <code>{html.escape(str(stock.get('sector', '-')))}</code>\n"
-            f"🏷️ الصناعة: <code>{html.escape(str(stock.get('industry', '-')))}</code>\n\n"
+            f"🏷️ الصناعة: <code>{html.escape(str(stock.get('industry', '-')))}</code>\n"
+            f"📰 أخبار اليوم: {html.escape(stock_news)}\n\n"
             f"📄 <b>آخر إفصاحات SEC</b>\n"
             f"{sec_summary}\n\n"
             f"📈 <a href='{tv_url}'>TradingView</a>\n"
@@ -441,4 +493,3 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
-
