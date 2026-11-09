@@ -6,7 +6,7 @@ from datetime import datetime
 import pytz
 import requests
 
-# قراءة الإعدادات الخاصة بك
+# قراءة الإعدادات بالصيغة الخاصة بك
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -52,7 +52,7 @@ class FinvizRowsParser(HTMLParser):
             self.cell_text.append(data)
 
 def fetch_finviz_signal(signal, limit=20):
-    """جلب أفضل الأسهم لـ Signal معيّن"""
+    """جلب أسهم Signal معيّن من صفحة الفاحص مباشرة"""
     url = f"https://finviz.com/screener.ashx?v=111&s={signal}"
     res = requests.get(url, headers=FINVIZ_HEADERS, timeout=20)
     res.raise_for_status()
@@ -94,7 +94,7 @@ def send_telegram_message(message, parse_mode="HTML"):
 
 def to_float(value):
     try:
-        return float(str(value).replace(",", "").replace("%", "").strip())
+        return float(str(value).replace(",", "").replace("%", "").replace("x", "").strip())
     except (TypeError, ValueError):
         return None
 
@@ -123,57 +123,107 @@ def get_market_session_and_name():
     main_end = datetime.strptime("16:00", "%H:%M").time()
     post_end = datetime.strptime("20:00", "%H:%M").time()
     
-    session_key = None
-    session_title = ""
-    
     if pre_start <= current_time < main_start:
-        session_key = "Pre-Market"
-        session_title = "ما قبل السوق"
+        return "Pre-Market", "ما قبل السوق"
     elif main_start <= current_time < main_end:
-        session_key = "Main Session"
-        session_title = "الجلسة الرئيسية"
+        return "Main Session", "الجلسة الرئيسية"
     elif main_end <= current_time <= post_end:
-        session_key = "Post-Market"
-        session_title = "ما بعد السوق"
+        return "Post-Market", "ما بعد السوق"
         
-    return session_key, session_title
+    return None, None
 
-def process_and_build_report(session_key, session_title):
-    """جلب وتصفية الأسهم وبناء تقرير لأعلى 7 أسهم"""
-    top_gainers = fetch_finviz_signal('ta_topgainers', limit=20)
+def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
+    """جلب وتصفية الأسهم للإشارة المحددة"""
+    skip_tickers = skip_tickers or set()
+    try:
+        raw_stocks = fetch_finviz_signal(signal_name, limit=20)
+        valid = []
+        for stock in raw_stocks:
+            ticker = str(stock.get('row_key', '')).strip().upper()
+            if not ticker or ticker in skip_tickers:
+                continue
+                
+            price = to_float(stock.get('price'))
+            if price is None or price <= 0:
+                continue
+                
+            volume = to_float(stock.get('volume'))
+            if volume is None or volume <= 10000:
+                continue
+                
+            if is_excluded_sector(stock):
+                continue
+                
+            change_val = to_float(stock.get('change'))
+            if positive_only and (change_val is None or change_val <= 0):
+                continue
+                
+            # جلب الحجم النسبي بدقة من كافة الاحتمالات الممكنة في الفاحص
+            rel_vol = (
+                str(stock.get('revol', '')).strip() or 
+                str(stock.get('rel_volume', '')).strip() or 
+                str(stock.get('rvol', '')).strip()
+            )
+            if not rel_vol or rel_vol in ["-", "nan", "None"]:
+                rel_vol = "-"
+            else:
+                if not rel_vol.endswith("x"):
+                    rel_vol += "x"
+
+            change_str = str(stock.get('change', '0%'))
+            if not change_str.startswith("+") and not change_str.startswith("-") and change_val and change_val > 0:
+                change_str = "+" + change_str
+
+            valid.append({
+                "ticker": ticker,
+                "price": price,
+                "change": change_val if change_val is not None else 0.0,
+                "change_str": change_str,
+                "rvol": rel_vol
+            })
+        return valid
+    except Exception as e:
+        print(f"❌ خطأ في جلب إشارة {signal_name}: {e}")
+        return []
+
+def fetch_and_build_all_reports(session_title):
+    """تجميع وفحص جميع الإشارات (Top Gainers, New High, Most Active, Unusual Volume)"""
+    seen_tickers = set()
     
-    valid_stocks = []
-    for stock in top_gainers:
-        ticker = str(stock.get('row_key', '')).strip().upper()
-        price = to_float(stock.get('price'))
-        change_val = to_float(stock.get('change'))
-        volume = to_float(stock.get('volume'))
+    # 1. Top Gainers
+    gainers = collect_signal_stocks('ta_topgainers', positive_only=True)
+    for s in gainers:
+        seen_tickers.add(s["ticker"])
         
-        if not ticker or price is None or price <= 0:
-            continue
-        if volume is None or volume <= 10000:
-            continue
-        if is_excluded_sector(stock):
-            continue
-        if change_val is None or change_val <= 0:
-            continue
+    # 2. New High
+    new_highs = collect_signal_stocks('ta_newhigh', positive_only=True, skip_tickers=seen_tickers)
+    for s in new_highs:
+        seen_tickers.add(s["ticker"])
+        
+    # 3. Most Active
+    most_active = collect_signal_stocks('ta_mostactive', positive_only=True, skip_tickers=seen_tickers)
+    for s in most_active:
+        seen_tickers.add(s["ticker"])
+        
+    # 4. Unusual Volume
+    unusual_vol = collect_signal_stocks('ta_unusualvolume', positive_only=True, skip_tickers=seen_tickers)
+
+    # دمج وترتيب جميع الأسهم الفريدة حسب نسبة التغير لاختيار أفضل 7 أسهم إجمالاً
+    all_combined = gainers + new_highs + most_active + unusual_vol
+    
+    # إزالة التكرار بالرمز بناءً على أعلى نسبة
+    unique_dict = {}
+    for item in all_combined:
+        t = item["ticker"]
+        if t not in unique_dict or item["change"] > unique_dict[t]["change"]:
+            unique_dict[t] = item
             
-        rel_vol = str(stock.get('revol', '')).strip() or str(stock.get('rel_volume', '')).strip()
-        
-        valid_stocks.append({
-            "ticker": ticker,
-            "price": price,
-            "change": change_val,
-            "change_str": str(stock.get('change', '0%')),
-            "rvol": rel_vol if rel_vol and rel_vol not in ["-", "nan", "None", ""] else "1x"
-        })
-    
-    if not valid_stocks:
+    final_list = list(unique_dict.values())
+    if not final_list:
         return None
-
-    # ترتيب حسب الأعلى نسبة تغير واختيار أفضل 7 أسهم (أو ما هو متوفر حتى 7)
-    valid_stocks.sort(key=lambda x: x["change"], reverse=True)
-    top_7 = valid_stocks[:7]
+        
+    final_list.sort(key=lambda x: x["change"], reverse=True)
+    top_7 = final_list[:7]
 
     # التوقيت المحلي (بتوقيت السعودية)
     sa_tz = pytz.timezone('Asia/Riyadh')
@@ -187,18 +237,15 @@ def process_and_build_report(session_key, session_title):
         t = item["ticker"]
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
         ch_str = item["change_str"]
-        if not ch_str.startswith("+") and not ch_str.startswith("-"):
-            ch_str = "+" + ch_str
-            
-        rvol_clean = item["rvol"].replace("x", "")
+        rvol_val = item["rvol"]
         
-        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f} · RVOL {rvol_clean}x")
+        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f} · RVOL {rvol_val}")
         lines.append("• 🆕\n")
 
     return "\n".join(lines)
 
 def main_loop():
-    print("🚀 تم تشغيل الرادار بالتقرير المجمع (أعلى 7 أسهم)...")
+    print("🚀 تم تشغيل الرادار المجمع الشامل (لجميع الإشارات)...")
     was_open = False
     
     while True:
@@ -210,7 +257,7 @@ def main_loop():
                 was_open = True
                 
             print(f"⏳ جاري فحص وإنشاء التقرير المجمع لـ ({session_title})...")
-            report_message = process_and_build_report(session_key, session_title)
+            report_message = fetch_and_build_all_reports(session_title)
             
             if report_message:
                 send_telegram_message(report_message, parse_mode="HTML")
