@@ -51,7 +51,7 @@ class FinvizRowsParser(HTMLParser):
         if self.cell_id is not None:
             self.cell_text.append(data)
 
-def fetch_finviz_signal(signal, limit=20):
+def fetch_finviz_signal(signal, limit=30):
     """جلب أسهم Signal معيّن من صفحة الفاحص مباشرة"""
     url = f"https://finviz.com/screener.ashx?v=111&s={signal}"
     res = requests.get(url, headers=FINVIZ_HEADERS, timeout=20)
@@ -136,7 +136,7 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
     """جلب وتصفية الأسهم للإشارة المحددة"""
     skip_tickers = skip_tickers or set()
     try:
-        raw_stocks = fetch_finviz_signal(signal_name, limit=20)
+        raw_stocks = fetch_finviz_signal(signal_name, limit=30)
         valid = []
         for stock in raw_stocks:
             ticker = str(stock.get('row_key', '')).strip().upper()
@@ -157,18 +157,6 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
             change_val = to_float(stock.get('change'))
             if positive_only and (change_val is None or change_val <= 0):
                 continue
-                
-            # جلب الحجم النسبي بدقة من كافة الاحتمالات الممكنة في الفاحص
-            rel_vol = (
-                str(stock.get('revol', '')).strip() or 
-                str(stock.get('rel_volume', '')).strip() or 
-                str(stock.get('rvol', '')).strip()
-            )
-            if not rel_vol or rel_vol in ["-", "nan", "None"]:
-                rel_vol = "-"
-            else:
-                if not rel_vol.endswith("x"):
-                    rel_vol += "x"
 
             change_str = str(stock.get('change', '0%'))
             if not change_str.startswith("+") and not change_str.startswith("-") and change_val and change_val > 0:
@@ -178,8 +166,7 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
                 "ticker": ticker,
                 "price": price,
                 "change": change_val if change_val is not None else 0.0,
-                "change_str": change_str,
-                "rvol": rel_vol
+                "change_str": change_str
             })
         return valid
     except Exception as e:
@@ -187,7 +174,7 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
         return []
 
 def fetch_and_build_all_reports(session_title):
-    """تجميع وفحص جميع الإشارات (Top Gainers, New High, Most Active, Unusual Volume)"""
+    """تجميع وفحص جميع الإشارات لاختيار أفضل 12 سهماً"""
     seen_tickers = set()
     
     # 1. Top Gainers
@@ -208,10 +195,9 @@ def fetch_and_build_all_reports(session_title):
     # 4. Unusual Volume
     unusual_vol = collect_signal_stocks('ta_unusualvolume', positive_only=True, skip_tickers=seen_tickers)
 
-    # دمج وترتيب جميع الأسهم الفريدة حسب نسبة التغير لاختيار أفضل 7 أسهم إجمالاً
+    # دمج وترتيب جميع الأسهم الفريدة لاختيار أفضل 12 سهماً إجمالاً
     all_combined = gainers + new_highs + most_active + unusual_vol
     
-    # إزالة التكرار بالرمز بناءً على أعلى نسبة
     unique_dict = {}
     for item in all_combined:
         t = item["ticker"]
@@ -223,7 +209,7 @@ def fetch_and_build_all_reports(session_title):
         return None
         
     final_list.sort(key=lambda x: x["change"], reverse=True)
-    top_7 = final_list[:7]
+    top_12 = final_list[:12]
 
     # التوقيت المحلي (بتوقيت السعودية)
     sa_tz = pytz.timezone('Asia/Riyadh')
@@ -233,19 +219,19 @@ def fetch_and_build_all_reports(session_title):
         f"⏱️ <b>أقوى المتحركين · {session_title} · آخر 30 دقيقة · {time_sa} بتوقيت السعودية</b>\n"
     ]
 
-    for idx, item in enumerate(top_7, 1):
+    for idx, item in enumerate(top_12, 1):
         t = item["ticker"]
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
         ch_str = item["change_str"]
-        rvol_val = item["rvol"]
         
-        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f} · RVOL {rvol_val}")
+        # تم استبعاد الحجم النسبي بناءً على طلبك والتركيز على الرمز والنسبة والسعر
+        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f}")
         lines.append("• 🆕\n")
 
     return "\n".join(lines)
 
 def main_loop():
-    print("🚀 تم تشغيل الرادار المجمع الشامل (لجميع الإشارات)...")
+    print("🚀 تم تشغيل الرادار المجمع الشامل (أعلى 12 سهماً بدون RVOL)...")
     was_open = False
     
     while True:
