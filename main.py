@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 from datetime import datetime
 import pytz
 import requests
+from googletrans import Translator  # مكتبة الترجمة
 
 # قراءة الإعدادات بالصيغة الخاصة بك
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -13,6 +14,21 @@ CHAT_ID = os.getenv("CHAT_ID")
 FINVIZ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 }
+
+# تهيئة مترجم جوجل
+translator = Translator()
+
+def translate_to_arabic(text):
+    """ترجمة النص إلى اللغة العربية تلقائياً"""
+    if not text or text == "لايوجد":
+        return "لايوجد"
+    try:
+        # الترجمة من الإنجليزية إلى العربية
+        translated = translator.translate(text, dest='ar')
+        return translated.text
+    except Exception as e:
+        print(f"⚠️ خطأ في الترجمة: {e}")
+        return text  # في حال حدث خطأ، يعود بالنص الأصلي لكي لا يتعطل البوت
 
 # سجل التنبيهات الفردية (لكل 5 دقائق): يمنع التكرار إذا لم يتغير السعر ويرقّم التنبيهات لكل سهم
 alerts_state = {"date": None, "stocks": {}}
@@ -103,7 +119,7 @@ def fetch_finviz_signal(signal, limit=30):
     return rows[:limit]
 
 def fetch_stock_news(ticker):
-    """جلب أحدث أخبار السهم من صفحة Finviz للشركة"""
+    """جلب أحدث أخبار السهم من صفحة Finviz وترجمتها للعربية"""
     try:
         url = f"https://finviz.com/quote.ashx?t={ticker}"
         res = requests.get(url, headers=FINVIZ_HEADERS, timeout=10)
@@ -114,7 +130,8 @@ def fetch_stock_news(ticker):
                 latest_news = parser.headlines[0]
                 if len(latest_news) > 90:
                     latest_news = latest_news[:87] + "..."
-                return latest_news
+                # ترجمة الخبر إلى العربية هنا
+                return translate_to_arabic(latest_news)
     except Exception as e:
         print(f"⚠️ خطأ في جلب أخبار السهم لـ {ticker}: {e}")
     return "لايوجد"
@@ -555,7 +572,7 @@ def main_loop():
             if was_open:
                 send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
                 was_open = False
-                last_summary_time = 0
+                last_summary_time =, 0
                 
             print("😴 السوق مغلق حالياً. الفحص التنشيطي القادم بعد 15 دقيقة...")
             time.sleep(900)
