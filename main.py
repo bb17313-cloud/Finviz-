@@ -572,7 +572,7 @@ def main_loop():
             if was_open:
                 send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
                 was_open = False
-                last_summary_time =, 0
+                last_summary_time = 0
                 
             print("😴 السوق مغلق حالياً. الفحص التنشيطي القادم بعد 15 دقيقة...")
             time.sleep(900)
