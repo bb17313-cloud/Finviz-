@@ -2,16 +2,27 @@ name: Stock Finviz & SEC Radar
 
 on:
   schedule:
-    # يعمل كل 5 دقائق من الاثنين إلى الجمعة (1-5) لتغطية جميع جلسات السوق الأمريكي
-    - cron: '*/5 8-23 * * 1-5'
-    - cron: '*/5 0-1 * * 2-6'
+    # يبدأ عدة مرات موزعة لتغطية الجلسات كاملة (توقيت UTC)
+    # Pre + بداية Main
+    - cron: '5 8 * * 1-5'      # ~11:00 ص بتوقيت السعودية
+    - cron: '5 12 * * 1-5'     # منتصف Main
+    - cron: '5 16 * * 1-5'     # نهاية Main + بداية Post
+    - cron: '5 20 * * 1-5'     # منتصف Post
+    # تغطية آخر جزء من Post + الليل (ينتقل لليوم التالي)
+    - cron: '5 0 * * 2-6'      # منتصف الليل تقريباً
+    - cron: '5 3 * * 2-6'      # احتياطي
 
-  workflow_dispatch: # يتيح لك تشغيل السكريبت يدوياً في أي وقت
+  workflow_dispatch: # تشغيل يدوي في أي وقت
+
+concurrency:
+  group: stock-radar
+  cancel-in-progress: true   # أي تشغيل جديد يلغي القديم عشان ما يتكرر
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 360     # أقصى مدة مسموحة (6 ساعات)
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
