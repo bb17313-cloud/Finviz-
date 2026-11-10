@@ -33,6 +33,9 @@ def translate_to_arabic(text):
 # سجل التنبيهات الفردية (لكل 5 دقائق): يمنع التكرار إذا لم يتغير السعر ويرقّم التنبيهات لكل سهم
 alerts_state = {"date": None, "stocks": {}}
 
+# سجل الأسهم في آخر تقرير مجمع (لإظهار 🆕 فقط للأسهم الجديدة)
+last_summary_tickers = set()
+
 class FinvizRowsParser(HTMLParser):
     """يقرأ صفوف جدول الفاحص مباشرة: كل صف data-row-key وكل خلية data-column-id"""
     def __init__(self):
@@ -445,6 +448,7 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
 
 def build_summary_report(session_title):
     """بناء التقرير المجمع لأعلى 12 سهماً (يُرسل كل 15 دقيقة)"""
+    global last_summary_tickers
     seen_tickers = set()
     
     gainers = collect_signal_stocks('ta_topgainers', positive_only=True)
@@ -479,8 +483,10 @@ def build_summary_report(session_title):
     sa_tz = pytz.timezone('Asia/Riyadh')
     time_sa = datetime.now(sa_tz).strftime("%I:%M %p")
     
+    current_tickers = {item["ticker"] for item in top_12}
+    
     lines = [
-        f"⏱️ <b>{session_title} · آخر 30 دقيقة · {time_sa} بتوقيت السعودية</b>\n"
+        f"⏱️ <b>{session_title} · آخر 15 دقيقة · {time_sa} بتوقيت السعودية</b>\n"
     ]
 
     for idx, item in enumerate(top_12, 1):
@@ -488,8 +494,13 @@ def build_summary_report(session_title):
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
         ch_str = item["change_str"]
         
-        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f}")
-        lines.append("• 🆕\n")
+        is_new = t not in last_summary_tickers
+        new_mark = " 🆕" if is_new else ""
+        
+        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f}{new_mark}")
+
+    # تحديث قائمة الأسهم السابقة
+    last_summary_tickers = current_tickers
 
     return "\n".join(lines)
 
