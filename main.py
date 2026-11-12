@@ -23,21 +23,17 @@ def translate_to_arabic(text):
     if not text or text == "لايوجد":
         return "لايوجد"
     try:
-        # الترجمة من الإنجليزية إلى العربية
         translated = translator.translate(text, dest='ar')
         return translated.text
     except Exception as e:
         print(f"⚠️ خطأ في الترجمة: {e}")
-        return text  # في حال حدث خطأ، يعود بالنص الأصلي لكي لا يتعطل البوت
+        return text
 
-# سجل التنبيهات الفردية (لكل 5 دقائق): يمنع التكرار إذا لم يتغير السعر ويرقّم التنبيهات لكل سهم
+# سجل التنبيهات الفردية
 alerts_state = {"date": None, "stocks": {}}
-
-# سجل الأسهم في آخر تقرير مجمع (لإظهار 🆕 فقط للأسهم الجديدة)
 last_summary_tickers = set()
 
 class FinvizRowsParser(HTMLParser):
-    """يقرأ صفوف جدول الفاحص مباشرة: كل صف data-row-key وكل خلية data-column-id"""
     def __init__(self):
         super().__init__()
         self.rows = []
@@ -74,7 +70,6 @@ class FinvizRowsParser(HTMLParser):
             self.cell_text.append(data)
 
 class FinvizNewsParser(HTMLParser):
-    """يقرأ جدول الأخبار من صفحة سهم معين في Finviz"""
     def __init__(self):
         super().__init__()
         self.headlines = []
@@ -104,7 +99,6 @@ class FinvizNewsParser(HTMLParser):
             self.current_headline.append(data)
 
 def fetch_finviz_signal(signal, limit=30):
-    """جلب أسهم Signal معيّن من صفحة الفاحص مباشرة"""
     url = f"https://finviz.com/screener.ashx?v=111&s={signal}"
     res = requests.get(url, headers=FINVIZ_HEADERS, timeout=20)
     res.raise_for_status()
@@ -122,7 +116,6 @@ def fetch_finviz_signal(signal, limit=30):
     return rows[:limit]
 
 def fetch_stock_news(ticker):
-    """جلب أحدث أخبار السهم من صفحة Finviz وترجمتها للعربية"""
     try:
         url = f"https://finviz.com/quote.ashx?t={ticker}"
         res = requests.get(url, headers=FINVIZ_HEADERS, timeout=10)
@@ -133,14 +126,12 @@ def fetch_stock_news(ticker):
                 latest_news = parser.headlines[0]
                 if len(latest_news) > 90:
                     latest_news = latest_news[:87] + "..."
-                # ترجمة الخبر إلى العربية هنا
                 return translate_to_arabic(latest_news)
     except Exception as e:
         print(f"⚠️ خطأ في جلب أخبار السهم لـ {ticker}: {e}")
     return "لايوجد"
 
 def send_telegram_message(message, parse_mode="HTML"):
-    """إرسال التقرير المنسق إلى التلغرام"""
     if not BOT_TOKEN or not CHAT_ID:
         print("❌ خطأ: لم يتم العثور على إعدادات BOT_TOKEN أو CHAT_ID.")
         return False
@@ -163,7 +154,6 @@ def send_telegram_message(message, parse_mode="HTML"):
         return False
 
 def get_alert_state():
-    """إرجاع سجل التنبيهات الفردية وتصفيره عند بداية يوم جديد (توقيت نيويورك)"""
     today = datetime.now(pytz.timezone('America/New_York')).strftime("%Y-%m-%d")
     if alerts_state["date"] != today:
         alerts_state["date"] = today
@@ -294,7 +284,6 @@ def fetch_sec_filings_only(symbol):
     return sec_summary, cik_str_val, latest_accession
 
 def is_excluded_sector(stock):
-    """استبعاد أسهم البنوك والمطاعم والمشروبات والتأمين"""
     sector = str(stock.get('sector', '')).lower()
     industry = str(stock.get('industry', '')).lower()
     exclude_keywords = ['bank', 'insurance', 'restaurant', 'beverage']
@@ -304,10 +293,12 @@ def is_excluded_sector(stock):
     return False
 
 def send_stock_cards(session_name, stocks, signal_label, positive_only=False, skip_tickers=None):
-    """إرسال التنبيهات الفردية لكل 5 دقائق لكل سهم"""
     state = get_alert_state()
     sent = 0
     skip_tickers = skip_tickers or set()
+    
+    # 🌟 التخفيف في pre فقط: خفض الحد الأدنى للحجم إلى 1,000 سهم بدلاً من 10,000
+    min_volume = 1000 if session_name == "Pre-Market" else 10000
     
     for stock in stocks:
         ticker = str(stock.get('row_key', '')).strip().upper()
@@ -319,7 +310,7 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
             continue
         
         volume = to_float(stock.get('volume'))
-        if volume is None or volume <= 10000:
+        if volume is None or volume < min_volume:
             continue
         
         if is_excluded_sector(stock):
@@ -383,7 +374,6 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
     return sent
 
 def get_market_session_and_name():
-    """تحديد الجلسة الحالية وتعيين العنوان المخصص للتقرير المجمع"""
     ny_tz = pytz.timezone('America/New_York')
     now_ny = datetime.now(ny_tz)
     
@@ -408,6 +398,11 @@ def get_market_session_and_name():
 
 def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
     skip_tickers = skip_tickers or set()
+    session_key, _ = get_market_session_and_name()
+    
+    # 🌟 التخفيف في pre فقط: خفض الحد الأدنى للحجم في التقرير المجمع أيضاً
+    min_volume = 1000 if session_key == "Pre-Market" else 10000
+
     try:
         raw_stocks = fetch_finviz_signal(signal_name, limit=30)
         valid = []
@@ -421,7 +416,7 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
                 continue
                 
             volume = to_float(stock.get('volume'))
-            if volume is None or volume <= 10000:
+            if volume is None or volume < min_volume:
                 continue
                 
             if is_excluded_sector(stock):
@@ -447,7 +442,6 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
         return []
 
 def build_summary_report(session_title):
-    """بناء التقرير المجمع لأعلى 12 سهماً (يُرسل كل 15 دقيقة)"""
     global last_summary_tickers
     seen_tickers = set()
     
@@ -499,13 +493,10 @@ def build_summary_report(session_title):
         
         lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f}{new_mark}")
 
-    # تحديث قائمة الأسهم السابقة
     last_summary_tickers = current_tickers
-
     return "\n".join(lines)
 
 def run_5min_individual_alerts(session_name):
-    """فحص وإرسال التنبيهات الفردية (كل 5 دقائق)"""
     seen_tickers = set()
 
     try:
@@ -564,7 +555,6 @@ def main_loop():
                 send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
                 was_open = True
             
-            # 1. التقرير المجمع (كل 15 دقيقة = 900 ثانية)
             if current_time_epoch - last_summary_time >= 900:
                 print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
                 report_message = build_summary_report(session_title)
@@ -573,12 +563,11 @@ def main_loop():
                     print("✅ تم إرسال التقرير المجمع بنجاح.")
                 last_summary_time = time.time()
 
-            # 2. التنبيهات الفردية للمصادر (كل 5 دقائق)
             print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
             run_5min_individual_alerts(session_key)
             
             print("💤 التحديث القادم بعد 5 دقائق...")
-            time.sleep(300)  # حلقة الـ 5 دقائق الرئيسية
+            time.sleep(300)
         else:
             if was_open:
                 send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
