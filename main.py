@@ -297,7 +297,6 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
     sent = 0
     skip_tickers = skip_tickers or set()
     
-    # 🌟 التخفيف في pre فقط: خفض الحد الأدنى للحجم إلى 1,000 سهم بدلاً من 10,000
     min_volume = 1000 if session_name == "Pre-Market" else 10000
     
     for stock in stocks:
@@ -400,7 +399,6 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
     skip_tickers = skip_tickers or set()
     session_key, _ = get_market_session_and_name()
     
-    # 🌟 التخفيف في pre فقط: خفض الحد الأدنى للحجم في التقرير المجمع أيضاً
     min_volume = 1000 if session_key == "Pre-Market" else 10000
 
     try:
@@ -472,18 +470,21 @@ def build_summary_report(session_title):
         return None
         
     final_list.sort(key=lambda x: x["change"], reverse=True)
-    top_12 = final_list[:12]
+    
+    # 🌟 تعديل العدد إلى أعلى 20 سهماً بدلاً من 12
+    top_20 = final_list[:20]
 
     sa_tz = pytz.timezone('Asia/Riyadh')
     time_sa = datetime.now(sa_tz).strftime("%I:%M %p")
     
-    current_tickers = {item["ticker"] for item in top_12}
+    current_tickers = {item["ticker"] for item in top_20}
     
+    # 🌟 تحديث العنوان ليناسب التحديث كل 3 دقائق
     lines = [
-        f"⏱️ <b>{session_title} · آخر 15 دقيقة · {time_sa} بتوقيت السعودية</b>\n"
+        f"⏱️ <b>{session_title} · آخر 3 دقائق · {time_sa} بتوقيت السعودية</b>\n"
     ]
 
-    for idx, item in enumerate(top_12, 1):
+    for idx, item in enumerate(top_20, 1):
         t = item["ticker"]
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
         ch_str = item["change_str"]
@@ -542,7 +543,7 @@ def run_5min_individual_alerts(session_name):
         print(f"❌ خطأ في Unusual Volume: {e}")
 
 def main_loop():
-    print("🚀 تم تشغيل الرادار (التنبيهات الفردية كل 5 دقائق + التقرير المجمع كل 15 دقيقة)...")
+    print("🚀 تم تشغيل الرادار (التقرير المجمع والتنبيهات كل 3 دقائق)...")
     was_open = False
     last_summary_time = 0
     
@@ -555,7 +556,8 @@ def main_loop():
                 send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
                 was_open = True
             
-            if current_time_epoch - last_summary_time >= 900:
+            # 🌟 إرسال التقرير المجمع كل 3 دقائق (180 ثانية)
+            if current_time_epoch - last_summary_time >= 180:
                 print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
                 report_message = build_summary_report(session_title)
                 if report_message:
@@ -566,8 +568,8 @@ def main_loop():
             print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
             run_5min_individual_alerts(session_key)
             
-            print("💤 التحديث القادم بعد 5 دقائق...")
-            time.sleep(300)
+            print("💤 التحديث القادم بعد 3 دقائق...")
+            time.sleep(180)  # 🌟 التكرار كل 3 دقائق (180 ثانية)
         else:
             if was_open:
                 send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
