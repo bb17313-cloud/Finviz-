@@ -395,6 +395,13 @@ def get_market_session_and_name():
         
     return None, None
 
+SIGNAL_WORDS = {
+    "ta_topgainers": "Top/G",
+    "ta_newhigh": "N/H",
+    "ta_mostactive": "Most/AC",
+    "ta_unusualvolume": "Unusual/V",
+}
+
 def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
     skip_tickers = skip_tickers or set()
     session_key, _ = get_market_session_and_name()
@@ -432,7 +439,8 @@ def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
                 "ticker": ticker,
                 "price": price,
                 "change": change_val if change_val is not None else 0.0,
-                "change_str": change_str
+                "change_str": change_str,
+                "signal": SIGNAL_WORDS.get(signal_name, "")
             })
         return valid
     except Exception as e:
@@ -471,8 +479,8 @@ def build_summary_report(session_title):
         
     final_list.sort(key=lambda x: x["change"], reverse=True)
     
-    # 🌟 تعديل العدد إلى أعلى 20 سهماً بدلاً من 12
-    top_20 = final_list[:20]
+    # 🌟 تعديل العدد إلى أعلى 25 سهماً (إذا كان العدد موجوداً)
+    top_20 = final_list[:25]
 
     sa_tz = pytz.timezone('Asia/Riyadh')
     time_sa = datetime.now(sa_tz).strftime("%I:%M %p")
@@ -492,7 +500,7 @@ def build_summary_report(session_title):
         is_new = t not in last_summary_tickers
         new_mark = " 🆕" if is_new else ""
         
-        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f}{new_mark}")
+        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> · ${item['price']:.2f} · {ch_str} · {item['signal']}{new_mark}")
 
     last_summary_tickers = current_tickers
     return "\n".join(lines)
@@ -576,8 +584,8 @@ def main_loop():
                 was_open = False
                 last_summary_time = 0
                 
-            print("😴 السوق مغلق حالياً. الفحص التنشيطي القادم بعد 15 دقيقة...")
-            time.sleep(900)
+            print("😴 السوق مغلق حالياً. الفحص التنشيطي القادم بعد 3 دقيقة...")
+            time.sleep(120)
 
 if __name__ == "__main__":
     main_loop()
