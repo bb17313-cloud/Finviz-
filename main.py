@@ -497,10 +497,10 @@ def build_summary_report(session_title):
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
         ch_str = item["change_str"]
         
-        is_new = t not in last_summary_tickers
+        is_new = bool(last_summary_tickers) and t not in last_summary_tickers
         new_mark = " 🆕" if is_new else ""
         
-        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> · ${item['price']:.2f} · {ch_str} · {item['signal']}{new_mark}")
+        lines.append(f"<a href='{tv_url}'>{t}</a> · ${item['price']:.2f} · {ch_str} · {item['signal']}{new_mark}")
 
     last_summary_tickers = current_tickers
     return "\n".join(lines)
