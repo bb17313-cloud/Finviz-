@@ -1,10 +1,13 @@
 import os
 import time
+import random
 import html
 from html.parser import HTMLParser
 from datetime import datetime
 import pytz
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from googletrans import Translator  # مكتبة الترجمة
 
 # قراءة الإعدادات بالصيغة الخاصة بك
@@ -12,11 +15,36 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 FINVIZ_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://finviz.com/",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
 }
+
+
+def create_finviz_session():
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[403, 429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update(FINVIZ_HEADERS)
+    return session
+
+
+finviz_session = create_finviz_session()
 
 # تهيئة مترجم جوجل
 translator = Translator()
+
 
 def translate_to_arabic(text):
     """ترجمة النص إلى اللغة العربية تلقائياً"""
@@ -29,9 +57,11 @@ def translate_to_arabic(text):
         print(f"⚠️ خطأ في الترجمة: {e}")
         return text
 
+
 # سجل التنبيهات الفردية
 alerts_state = {"date": None, "stocks": {}}
 last_summary_tickers = set()
+
 
 class FinvizRowsParser(HTMLParser):
     def __init__(self):
@@ -69,6 +99,7 @@ class FinvizRowsParser(HTMLParser):
         if self.cell_id is not None:
             self.cell_text.append(data)
 
+
 class FinvizNewsParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -98,13 +129,15 @@ class FinvizNewsParser(HTMLParser):
         if self.in_a:
             self.current_headline.append(data)
 
+
 def fetch_finviz_signal(signal, limit=30):
     url = f"https://finviz.com/screener.ashx?v=111&s={signal}"
-    res = requests.get(url, headers=FINVIZ_HEADERS, timeout=20)
+    time.sleep(random.uniform(1.5, 3.0))
+    res = finviz_session.get(url, timeout=20)
     res.raise_for_status()
     parser = FinvizRowsParser()
     parser.feed(res.text)
-    
+
     rows = []
     seen_keys = set()
     for row in parser.rows:
@@ -115,10 +148,12 @@ def fetch_finviz_signal(signal, limit=30):
         rows.append(row)
     return rows[:limit]
 
+
 def fetch_stock_news(ticker):
     try:
         url = f"https://finviz.com/quote.ashx?t={ticker}"
-        res = requests.get(url, headers=FINVIZ_HEADERS, timeout=10)
+        time.sleep(random.uniform(1.0, 2.0))
+        res = finviz_session.get(url, timeout=12)
         if res.status_code == 200:
             parser = FinvizNewsParser()
             parser.feed(res.text)
@@ -131,20 +166,21 @@ def fetch_stock_news(ticker):
         print(f"⚠️ خطأ في جلب أخبار السهم لـ {ticker}: {e}")
     return "لايوجد"
 
+
 def send_telegram_message(message, parse_mode="HTML"):
     if not BOT_TOKEN or not CHAT_ID:
         print("❌ خطأ: لم يتم العثور على إعدادات BOT_TOKEN أو CHAT_ID.")
         return False
-        
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
         "text": message,
         "parse_mode": parse_mode,
-        "disable_web_page_preview": True
+        "disable_web_page_preview": True,
     }
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=15)
         if response.status_code != 200:
             print(f"❌ فشل إرسال رسالة التلغرام: {response.text}")
             return False
@@ -153,6 +189,7 @@ def send_telegram_message(message, parse_mode="HTML"):
         print(f"❌ خطأ أثناء الاتصال بالتلغرام: {e}")
         return False
 
+
 def get_alert_state():
     today = datetime.now(pytz.timezone('America/New_York')).strftime("%Y-%m-%d")
     if alerts_state["date"] != today:
@@ -160,11 +197,13 @@ def get_alert_state():
         alerts_state["stocks"] = {}
     return alerts_state["stocks"]
 
+
 def to_float(value):
     try:
         return float(str(value).replace(",", "").replace("%", "").replace("x", "").strip())
     except (TypeError, ValueError):
         return None
+
 
 def get_rel_vol_status(rvol_value):
     val = to_float(rvol_value)
@@ -178,6 +217,7 @@ def get_rel_vol_status(rvol_value):
         return "عادي"
     else:
         return "ظعيف"
+
 
 SEC_8K_ITEMS = {
     "1.01": "اتفاقية جوهرية", "1.02": "إنهاء اتفاقية جوهرية", "1.03": "إفلاس / حراسة قضائية",
@@ -196,6 +236,7 @@ SEC_FORM_NAMES = {
     "S-3": "طرح / تسجيل أوراق مالية", "F-1": "طرح / تسجيل أوراق مالية", "F-3": "طرح / تسجيل أوراق مالية",
     "S-8": "تسجيل أسهم برامج الموظفين", "DEF 14A": "بيان الجمعية العمومية (حوكمة)", "PRE 14A": "بيان الجمعية العمومية (حوكمة)",
 }
+
 
 def get_sec_description(f_form, f_items=""):
     f_upper = str(f_form).upper().strip()
@@ -227,13 +268,14 @@ def get_sec_description(f_form, f_items=""):
         return prefix + SEC_FORM_NAMES[base]
     return prefix + "إفصاح رسمي"
 
+
 def fetch_sec_filings_only(symbol):
     symbol = symbol.upper().strip()
     sec_headers = {"User-Agent": "StockRadarBot/1.0 (contact@stockradar.com)"}
     filings = []
     cik_str_val = None
     try:
-        tickers_res = requests.get("https://www.sec.gov/files/company_tickers.json", headers=sec_headers, timeout=5)
+        tickers_res = requests.get("https://www.sec.gov/files/company_tickers.json", headers=sec_headers, timeout=8)
         if tickers_res.status_code == 200:
             tickers_data = tickers_res.json()
             cik = None
@@ -246,7 +288,7 @@ def fetch_sec_filings_only(symbol):
                     break
             if cik:
                 sub_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-                sub_res = requests.get(sub_url, headers=sec_headers, timeout=5)
+                sub_res = requests.get(sub_url, headers=sec_headers, timeout=8)
                 if sub_res.status_code == 200:
                     recent = sub_res.json().get("filings", {}).get("recent", {})
                     forms = recent.get("form", [])
@@ -283,6 +325,7 @@ def fetch_sec_filings_only(symbol):
     sec_summary = "\n".join(sec_lines) if sec_lines else "• لا توجد إفصاحات حديثة"
     return sec_summary, cik_str_val, latest_accession
 
+
 def is_excluded_sector(stock):
     sector = str(stock.get('sector', '')).lower()
     industry = str(stock.get('industry', '')).lower()
@@ -292,51 +335,52 @@ def is_excluded_sector(stock):
             return True
     return False
 
+
 def send_stock_cards(session_name, stocks, signal_label, positive_only=False, skip_tickers=None):
     state = get_alert_state()
     sent = 0
     skip_tickers = skip_tickers or set()
-    
+
     min_volume = 1000 if session_name == "Pre-Market" else 10000
-    
+
     for stock in stocks:
         ticker = str(stock.get('row_key', '')).strip().upper()
         price = to_float(stock.get('price'))
         if not ticker or price is None or price <= 0:
             continue
-        
+
         if ticker in skip_tickers:
             continue
-        
+
         volume = to_float(stock.get('volume'))
         if volume is None or volume < min_volume:
             continue
-        
+
         if is_excluded_sector(stock):
             continue
-        
+
         if positive_only:
             change_val = to_float(stock.get('change'))
             if change_val is None or change_val <= 0:
                 continue
-        
+
         key = f"{session_name}:{ticker}"
         last = state.get(key)
-        
+
         if last and price <= last["price"]:
             continue
-        
+
         alert_no = (last["alert_no"] + 1) if last else 1
-        
+
         stock_news = fetch_stock_news(ticker)
         sec_summary, cik_val, _ = fetch_sec_filings_only(ticker)
-        
+
         rel_vol = str(stock.get('revol', '')).strip() or str(stock.get('rel_volume', '')).strip()
         float_val = str(stock.get('float', '')).strip()
-        
+
         tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
         sec_page_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik_val or ticker}&type=&dateb=&owner=include&count=40"
-        
+
         message_lines = [
             f"🚨 <b>تنبيه {alert_no}</b> · {html.escape(session_name)}",
             f"📡 Signal: <b>{html.escape(signal_label)}</b>\n",
@@ -347,139 +391,144 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
             f"🏷️ الصناعة: <code>{html.escape(str(stock.get('industry', '-')))}</code>",
             f"📰 أخبار اليوم: {html.escape(stock_news)}"
         ]
-        
+
         if rel_vol and rel_vol not in ["-", "nan", "None", ""]:
             status_text = get_rel_vol_status(rel_vol)
             status_suffix = f" ({status_text})" if status_text else ""
             message_lines.append(f"🔥 الحجم النسبي: <code>{html.escape(rel_vol)}</code>{status_suffix}")
-            
+
         if float_val and float_val not in ["-", "nan", "None", ""]:
             message_lines.append(f"🌊 الفلوت: <code>{html.escape(float_val)}</code>")
-            
+
         message_lines.extend([
             f"\n📄 <b>آخر إفصاحات SEC</b>",
             f"{sec_summary}\n",
             f"📈 <a href='{tv_url}'>TradingView</a>",
             f"🏛️ <a href='{html.escape(sec_page_url)}'>SEC</a>"
         ])
-        
+
         message = "\n".join(message_lines)
-        
+
         if send_telegram_message(message, parse_mode="HTML"):
             state[key] = {"price": price, "alert_no": alert_no}
             sent += 1
-            time.sleep(1)
-    
+            time.sleep(1.5)
+
     return sent
+
 
 def get_market_session_and_name():
     ny_tz = pytz.timezone('America/New_York')
     now_ny = datetime.now(ny_tz)
-    
+
     if now_ny.weekday() >= 5:
         return None, None
-        
+
     current_time = now_ny.time()
-    
+
     pre_start = datetime.strptime("04:00", "%H:%M").time()
     main_start = datetime.strptime("09:30", "%H:%M").time()
     main_end = datetime.strptime("16:00", "%H:%M").time()
     post_end = datetime.strptime("20:00", "%H:%M").time()
-    
+
     if pre_start <= current_time < main_start:
         return "Pre-Market", "الأسهم الفعالة ماقبل السوق"
     elif main_start <= current_time < main_end:
         return "Main Session", "الأسهم الفعالة للجلسة الرئيسة"
     elif main_end <= current_time <= post_end:
         return "Post-Market", "الأسهم الفعالة لجلسة post"
-        
+
     return None, None
 
-def collect_signal_stocks(signal_name, positive_only=False, skip_tickers=None):
+
+def filter_signal_stocks(raw_stocks, session_key, positive_only=False, skip_tickers=None):
     skip_tickers = skip_tickers or set()
-    session_key, _ = get_market_session_and_name()
-    
     min_volume = 1000 if session_key == "Pre-Market" else 10000
+    valid = []
 
-    try:
-        raw_stocks = fetch_finviz_signal(signal_name, limit=30)
-        valid = []
-        for stock in raw_stocks:
-            ticker = str(stock.get('row_key', '')).strip().upper()
-            if not ticker or ticker in skip_tickers:
-                continue
-                
-            price = to_float(stock.get('price'))
-            if price is None or price <= 0:
-                continue
-                
-            volume = to_float(stock.get('volume'))
-            if volume is None or volume < min_volume:
-                continue
-                
-            if is_excluded_sector(stock):
-                continue
-                
-            change_val = to_float(stock.get('change'))
-            if positive_only and (change_val is None or change_val <= 0):
-                continue
+    for stock in raw_stocks:
+        ticker = str(stock.get('row_key', '')).strip().upper()
+        if not ticker or ticker in skip_tickers:
+            continue
 
-            change_str = str(stock.get('change', '0%'))
-            if not change_str.startswith("+") and not change_str.startswith("-") and change_val and change_val > 0:
-                change_str = "+" + change_str
+        price = to_float(stock.get('price'))
+        if price is None or price <= 0:
+            continue
 
-            valid.append({
-                "ticker": ticker,
-                "price": price,
-                "change": change_val if change_val is not None else 0.0,
-                "change_str": change_str
-            })
-        return valid
-    except Exception as e:
-        print(f"❌ خطأ في جلب إشارة {signal_name}: {e}")
-        return []
+        volume = to_float(stock.get('volume'))
+        if volume is None or volume < min_volume:
+            continue
 
-def build_summary_report(session_title):
+        if is_excluded_sector(stock):
+            continue
+
+        change_val = to_float(stock.get('change'))
+        if positive_only and (change_val is None or change_val <= 0):
+            continue
+
+        change_str = str(stock.get('change', '0%'))
+        if not change_str.startswith("+") and not change_str.startswith("-") and change_val and change_val > 0:
+            change_str = "+" + change_str
+
+        valid.append({
+            "ticker": ticker,
+            "price": price,
+            "change": change_val if change_val is not None else 0.0,
+            "change_str": change_str
+        })
+    return valid
+
+
+def fetch_all_signals():
+    signals = ["ta_topgainers", "ta_newhigh", "ta_mostactive", "ta_unusualvolume"]
+    data = {}
+    for sig in signals:
+        try:
+            data[sig] = fetch_finviz_signal(sig, limit=25)
+        except Exception as e:
+            print(f"❌ خطأ في جلب إشارة {sig}: {e}")
+            data[sig] = []
+    return data
+
+
+def build_summary_report(session_key, session_title, signals_data):
     global last_summary_tickers
     seen_tickers = set()
-    
-    gainers = collect_signal_stocks('ta_topgainers', positive_only=True)
+
+    gainers = filter_signal_stocks(signals_data.get('ta_topgainers', []), session_key, positive_only=True)
     for s in gainers:
         seen_tickers.add(s["ticker"])
-        
-    new_highs = collect_signal_stocks('ta_newhigh', positive_only=True, skip_tickers=seen_tickers)
+
+    new_highs = filter_signal_stocks(signals_data.get('ta_newhigh', []), session_key, positive_only=True, skip_tickers=seen_tickers)
     for s in new_highs:
         seen_tickers.add(s["ticker"])
-        
-    most_active = collect_signal_stocks('ta_mostactive', positive_only=True, skip_tickers=seen_tickers)
+
+    most_active = filter_signal_stocks(signals_data.get('ta_mostactive', []), session_key, positive_only=True, skip_tickers=seen_tickers)
     for s in most_active:
         seen_tickers.add(s["ticker"])
-        
-    unusual_vol = collect_signal_stocks('ta_unusualvolume', positive_only=True, skip_tickers=seen_tickers)
+
+    unusual_vol = filter_signal_stocks(signals_data.get('ta_unusualvolume', []), session_key, positive_only=True, skip_tickers=seen_tickers)
 
     all_combined = gainers + new_highs + most_active + unusual_vol
-    
+
     unique_dict = {}
     for item in all_combined:
         t = item["ticker"]
         if t not in unique_dict or item["change"] > unique_dict[t]["change"]:
             unique_dict[t] = item
-            
+
     final_list = list(unique_dict.values())
     if not final_list:
         return None
-        
+
     final_list.sort(key=lambda x: x["change"], reverse=True)
-    
-    # 🌟 تعديل العدد إلى أعلى 20 سهماً بدلاً من 12
     top_20 = final_list[:20]
 
     sa_tz = pytz.timezone('Asia/Riyadh')
     time_sa = datetime.now(sa_tz).strftime("%I:%M %p")
-    
+
     current_tickers = {item["ticker"] for item in top_20}
-    
-    # 🌟 تحديث العنوان ليناسب التحديث كل 3 دقائق
+
     lines = [
         f"⏱️ <b>{session_title} · آخر 3 دقائق · {time_sa} بتوقيت السعودية</b>\n"
     ]
@@ -488,96 +537,82 @@ def build_summary_report(session_title):
         t = item["ticker"]
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
         ch_str = item["change_str"]
-        
+
         is_new = t not in last_summary_tickers
         new_mark = " 🆕" if is_new else ""
-        
+
         lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f}{new_mark}")
 
     last_summary_tickers = current_tickers
     return "\n".join(lines)
 
-def run_5min_individual_alerts(session_name):
+
+def run_individual_alerts(session_name, signals_data):
     seen_tickers = set()
 
-    try:
-        top_gainers = fetch_finviz_signal('ta_topgainers', limit=20)
-        send_stock_cards(session_name, top_gainers, "Top Gainers")
-        for s in top_gainers:
-            t = str(s.get('row_key', '')).strip().upper()
-            if t:
-                seen_tickers.add(t)
-    except Exception as e:
-        print(f"❌ خطأ في Gainers: {e}")
+    top_gainers = signals_data.get('ta_topgainers', [])
+    send_stock_cards(session_name, top_gainers, "Top Gainers")
+    for s in top_gainers:
+        t = str(s.get('row_key', '')).strip().upper()
+        if t:
+            seen_tickers.add(t)
 
-    time.sleep(2)
+    new_highs = signals_data.get('ta_newhigh', [])
+    send_stock_cards(session_name, new_highs, "New High", skip_tickers=seen_tickers)
+    for s in new_highs:
+        t = str(s.get('row_key', '')).strip().upper()
+        if t:
+            seen_tickers.add(t)
 
-    try:
-        new_highs = fetch_finviz_signal('ta_newhigh', limit=20)
-        send_stock_cards(session_name, new_highs, "New High", skip_tickers=seen_tickers)
-        for s in new_highs:
-            t = str(s.get('row_key', '')).strip().upper()
-            if t:
-                seen_tickers.add(t)
-    except Exception as e:
-        print(f"❌ خطأ في New High: {e}")
+    most_active = signals_data.get('ta_mostactive', [])
+    send_stock_cards(session_name, most_active, "Most Active", positive_only=True, skip_tickers=seen_tickers)
+    for s in most_active:
+        t = str(s.get('row_key', '')).strip().upper()
+        if t:
+            seen_tickers.add(t)
 
-    time.sleep(2)
+    unusual_volume = signals_data.get('ta_unusualvolume', [])
+    send_stock_cards(session_name, unusual_volume, "Unusual Volume", positive_only=True, skip_tickers=seen_tickers)
 
-    try:
-        most_active = fetch_finviz_signal('ta_mostactive', limit=20)
-        send_stock_cards(session_name, most_active, "Most Active", positive_only=True, skip_tickers=seen_tickers)
-        for s in most_active:
-            t = str(s.get('row_key', '')).strip().upper()
-            if t:
-                seen_tickers.add(t)
-    except Exception as e:
-        print(f"❌ خطأ في Most Active: {e}")
-
-    time.sleep(2)
-
-    try:
-        unusual_volume = fetch_finviz_signal('ta_unusualvolume', limit=20)
-        send_stock_cards(session_name, unusual_volume, "Unusual Volume", positive_only=True, skip_tickers=seen_tickers)
-    except Exception as e:
-        print(f"❌ خطأ في Unusual Volume: {e}")
 
 def main_loop():
     print("🚀 تم تشغيل الرادار (التقرير المجمع والتنبيهات كل 3 دقائق)...")
     was_open = False
     last_summary_time = 0
-    
+
     while True:
         session_key, session_title = get_market_session_and_name()
         current_time_epoch = time.time()
-        
+
         if session_key:
             if not was_open:
                 send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
                 was_open = True
-            
-            # 🌟 إرسال التقرير المجمع كل 3 دقائق (180 ثانية)
+
+            signals_data = fetch_all_signals()
+
             if current_time_epoch - last_summary_time >= 180:
                 print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
-                report_message = build_summary_report(session_title)
+                report_message = build_summary_report(session_key, session_title, signals_data)
                 if report_message:
                     send_telegram_message(report_message, parse_mode="HTML")
                     print("✅ تم إرسال التقرير المجمع بنجاح.")
                 last_summary_time = time.time()
 
             print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
-            run_5min_individual_alerts(session_key)
-            
+            run_individual_alerts(session_key, signals_data)
+
             print("💤 التحديث القادم بعد 3 دقائق...")
-            time.sleep(180)  # 🌟 التكرار كل 3 دقائق (180 ثانية)
+            time.sleep(180)
         else:
             if was_open:
                 send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
                 was_open = False
                 last_summary_time = 0
-                
-            print("😴 السوق مغلق حالياً. الفحص التنشيطي القادم بعد 3 دقيقة...")
+
+            print("😴 السوق مغلق حالياً. الفحص التنشيطي القادم بعد دقيقتين...")
             time.sleep(120)
+
 
 if __name__ == "__main__":
     main_loop()
