@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import random
 import html
@@ -8,11 +9,11 @@ import pytz
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from googletrans import Translator  # مكتبة الترجمة
+from googletrans import Translator
 
-# قراءة الإعدادات بالصيغة الخاصة بك
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+STATE_FILE = os.getenv("RADAR_STATE_FILE", "radar_state.json")
 
 FINVIZ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -41,26 +42,53 @@ def create_finviz_session():
 
 
 finviz_session = create_finviz_session()
-
-# تهيئة مترجم جوجل
 translator = Translator()
 
 
+def load_state():
+    today_ny = datetime.now(pytz.timezone("America/New_York")).strftime("%Y-%m-%d")
+    default_state = {
+        "date": today_ny,
+        "stocks": {},
+        "last_summary_tickers": [],
+        "was_open": False,
+    }
+    if not os.path.exists(STATE_FILE):
+        return default_state
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("date") != today_ny:
+            default_state["was_open"] = bool(data.get("was_open", False))
+            return default_state
+        return {
+            "date": today_ny,
+            "stocks": data.get("stocks", {}),
+            "last_summary_tickers": data.get("last_summary_tickers", []),
+            "was_open": bool(data.get("was_open", False)),
+        }
+    except Exception as e:
+        print(f"⚠️ تعذر قراءة ملف الحالة {STATE_FILE}: {e}")
+        return default_state
+
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ تعذر حفظ ملف الحالة {STATE_FILE}: {e}")
+
+
 def translate_to_arabic(text):
-    """ترجمة النص إلى اللغة العربية تلقائياً"""
     if not text or text == "لايوجد":
         return "لايوجد"
     try:
-        translated = translator.translate(text, dest='ar')
+        translated = translator.translate(text, dest="ar")
         return translated.text
     except Exception as e:
         print(f"⚠️ خطأ في الترجمة: {e}")
         return text
-
-
-# سجل التنبيهات الفردية
-alerts_state = {"date": None, "stocks": {}}
-last_summary_tickers = set()
 
 
 class FinvizRowsParser(HTMLParser):
@@ -190,14 +218,6 @@ def send_telegram_message(message, parse_mode="HTML"):
         return False
 
 
-def get_alert_state():
-    today = datetime.now(pytz.timezone('America/New_York')).strftime("%Y-%m-%d")
-    if alerts_state["date"] != today:
-        alerts_state["date"] = today
-        alerts_state["stocks"] = {}
-    return alerts_state["stocks"]
-
-
 def to_float(value):
     try:
         return float(str(value).replace(",", "").replace("%", "").replace("x", "").strip())
@@ -280,7 +300,7 @@ def fetch_sec_filings_only(symbol):
             tickers_data = tickers_res.json()
             cik = None
             cik_raw = None
-            for idx, val in tickers_data.items():
+            for _, val in tickers_data.items():
                 if val.get("ticker", "").upper() == symbol:
                     cik_raw = str(val.get("cik_str"))
                     cik = cik_raw.zfill(10)
@@ -307,9 +327,16 @@ def fetch_sec_filings_only(symbol):
                             filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/{acc_clean}/{p_doc}"
                         else:
                             filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/{acc_clean}/{acc_num}-index.htm"
-                        filings.append({"form": f_form, "date": f_date, "url": filing_url, "accession": acc_num, "brief": get_sec_description(f_form, f_items)})
+                        filings.append({
+                            "form": f_form,
+                            "date": f_date,
+                            "url": filing_url,
+                            "accession": acc_num,
+                            "brief": get_sec_description(f_form, f_items),
+                        })
     except Exception as e:
         print(f"⚠️ خطأ في جلب إفصاحات SEC لـ {symbol}: {e}")
+
     sec_lines = []
     seen_accessions = set()
     latest_accession = ""
@@ -319,7 +346,9 @@ def fetch_sec_filings_only(symbol):
             if f["accession"] in seen_accessions:
                 continue
             seen_accessions.add(f["accession"])
-            sec_lines.append(f"• <a href='{f['url']}'>{html.escape(str(f['form']))}</a> · <code>{f['date']}</code> — {html.escape(f['brief'])}")
+            sec_lines.append(
+                f"• <a href='{f['url']}'>{html.escape(str(f['form']))}</a> · <code>{f['date']}</code> — {html.escape(f['brief'])}"
+            )
             if len(sec_lines) >= 4:
                 break
     sec_summary = "\n".join(sec_lines) if sec_lines else "• لا توجد إفصاحات حديثة"
@@ -327,32 +356,30 @@ def fetch_sec_filings_only(symbol):
 
 
 def is_excluded_sector(stock):
-    sector = str(stock.get('sector', '')).lower()
-    industry = str(stock.get('industry', '')).lower()
-    exclude_keywords = ['bank', 'insurance', 'restaurant', 'beverage']
+    sector = str(stock.get("sector", "")).lower()
+    industry = str(stock.get("industry", "")).lower()
+    exclude_keywords = ["bank", "insurance", "restaurant", "beverage"]
     for kw in exclude_keywords:
         if kw in sector or kw in industry:
             return True
     return False
 
 
-def send_stock_cards(session_name, stocks, signal_label, positive_only=False, skip_tickers=None):
-    state = get_alert_state()
+def send_stock_cards(session_name, stocks, signal_label, stock_state, positive_only=False, skip_tickers=None):
     sent = 0
     skip_tickers = skip_tickers or set()
-
     min_volume = 1000 if session_name == "Pre-Market" else 10000
 
     for stock in stocks:
-        ticker = str(stock.get('row_key', '')).strip().upper()
-        price = to_float(stock.get('price'))
+        ticker = str(stock.get("row_key", "")).strip().upper()
+        price = to_float(stock.get("price"))
         if not ticker or price is None or price <= 0:
             continue
 
         if ticker in skip_tickers:
             continue
 
-        volume = to_float(stock.get('volume'))
+        volume = to_float(stock.get("volume"))
         if volume is None or volume < min_volume:
             continue
 
@@ -360,12 +387,12 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
             continue
 
         if positive_only:
-            change_val = to_float(stock.get('change'))
+            change_val = to_float(stock.get("change"))
             if change_val is None or change_val <= 0:
                 continue
 
         key = f"{session_name}:{ticker}"
-        last = state.get(key)
+        last = stock_state.get(key)
 
         if last and price <= last["price"]:
             continue
@@ -375,8 +402,8 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
         stock_news = fetch_stock_news(ticker)
         sec_summary, cik_val, _ = fetch_sec_filings_only(ticker)
 
-        rel_vol = str(stock.get('revol', '')).strip() or str(stock.get('rel_volume', '')).strip()
-        float_val = str(stock.get('float', '')).strip()
+        rel_vol = str(stock.get("revol", "")).strip() or str(stock.get("rel_volume", "")).strip()
+        float_val = str(stock.get("float", "")).strip()
 
         tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
         sec_page_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik_val or ticker}&type=&dateb=&owner=include&count=40"
@@ -389,7 +416,7 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
             f"📊 Vol: <code>{html.escape(str(stock.get('volume', '-')))}</code>",
             f"🏭 القطاع: <code>{html.escape(str(stock.get('sector', '-')))}</code>",
             f"🏷️ الصناعة: <code>{html.escape(str(stock.get('industry', '-')))}</code>",
-            f"📰 أخبار اليوم: {html.escape(stock_news)}"
+            f"📰 أخبار اليوم: {html.escape(stock_news)}",
         ]
 
         if rel_vol and rel_vol not in ["-", "nan", "None", ""]:
@@ -404,13 +431,13 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
             f"\n📄 <b>آخر إفصاحات SEC</b>",
             f"{sec_summary}\n",
             f"📈 <a href='{tv_url}'>TradingView</a>",
-            f"🏛️ <a href='{html.escape(sec_page_url)}'>SEC</a>"
+            f"🏛️ <a href='{html.escape(sec_page_url)}'>SEC</a>",
         ])
 
         message = "\n".join(message_lines)
 
         if send_telegram_message(message, parse_mode="HTML"):
-            state[key] = {"price": price, "alert_no": alert_no}
+            stock_state[key] = {"price": price, "alert_no": alert_no}
             sent += 1
             time.sleep(1.5)
 
@@ -418,7 +445,7 @@ def send_stock_cards(session_name, stocks, signal_label, positive_only=False, sk
 
 
 def get_market_session_and_name():
-    ny_tz = pytz.timezone('America/New_York')
+    ny_tz = pytz.timezone("America/New_York")
     now_ny = datetime.now(ny_tz)
 
     if now_ny.weekday() >= 5:
@@ -447,26 +474,26 @@ def filter_signal_stocks(raw_stocks, session_key, positive_only=False, skip_tick
     valid = []
 
     for stock in raw_stocks:
-        ticker = str(stock.get('row_key', '')).strip().upper()
+        ticker = str(stock.get("row_key", "")).strip().upper()
         if not ticker or ticker in skip_tickers:
             continue
 
-        price = to_float(stock.get('price'))
+        price = to_float(stock.get("price"))
         if price is None or price <= 0:
             continue
 
-        volume = to_float(stock.get('volume'))
+        volume = to_float(stock.get("volume"))
         if volume is None or volume < min_volume:
             continue
 
         if is_excluded_sector(stock):
             continue
 
-        change_val = to_float(stock.get('change'))
+        change_val = to_float(stock.get("change"))
         if positive_only and (change_val is None or change_val <= 0):
             continue
 
-        change_str = str(stock.get('change', '0%'))
+        change_str = str(stock.get("change", "0%"))
         if not change_str.startswith("+") and not change_str.startswith("-") and change_val and change_val > 0:
             change_str = "+" + change_str
 
@@ -474,7 +501,7 @@ def filter_signal_stocks(raw_stocks, session_key, positive_only=False, skip_tick
             "ticker": ticker,
             "price": price,
             "change": change_val if change_val is not None else 0.0,
-            "change_str": change_str
+            "change_str": change_str,
         })
     return valid
 
@@ -491,23 +518,23 @@ def fetch_all_signals():
     return data
 
 
-def build_summary_report(session_key, session_title, signals_data):
-    global last_summary_tickers
+def build_summary_report(session_key, session_title, signals_data, state):
+    last_summary_set = set(state.get("last_summary_tickers", []))
     seen_tickers = set()
 
-    gainers = filter_signal_stocks(signals_data.get('ta_topgainers', []), session_key, positive_only=True)
+    gainers = filter_signal_stocks(signals_data.get("ta_topgainers", []), session_key, positive_only=True)
     for s in gainers:
         seen_tickers.add(s["ticker"])
 
-    new_highs = filter_signal_stocks(signals_data.get('ta_newhigh', []), session_key, positive_only=True, skip_tickers=seen_tickers)
+    new_highs = filter_signal_stocks(signals_data.get("ta_newhigh", []), session_key, positive_only=True, skip_tickers=seen_tickers)
     for s in new_highs:
         seen_tickers.add(s["ticker"])
 
-    most_active = filter_signal_stocks(signals_data.get('ta_mostactive', []), session_key, positive_only=True, skip_tickers=seen_tickers)
+    most_active = filter_signal_stocks(signals_data.get("ta_mostactive", []), session_key, positive_only=True, skip_tickers=seen_tickers)
     for s in most_active:
         seen_tickers.add(s["ticker"])
 
-    unusual_vol = filter_signal_stocks(signals_data.get('ta_unusualvolume', []), session_key, positive_only=True, skip_tickers=seen_tickers)
+    unusual_vol = filter_signal_stocks(signals_data.get("ta_unusualvolume", []), session_key, positive_only=True, skip_tickers=seen_tickers)
 
     all_combined = gainers + new_highs + most_active + unusual_vol
 
@@ -524,10 +551,10 @@ def build_summary_report(session_key, session_title, signals_data):
     final_list.sort(key=lambda x: x["change"], reverse=True)
     top_20 = final_list[:20]
 
-    sa_tz = pytz.timezone('Asia/Riyadh')
+    sa_tz = pytz.timezone("Asia/Riyadh")
     time_sa = datetime.now(sa_tz).strftime("%I:%M %p")
 
-    current_tickers = {item["ticker"] for item in top_20}
+    current_tickers = [item["ticker"] for item in top_20]
 
     lines = [
         f"⏱️ <b>{session_title} · آخر 3 دقائق · {time_sa} بتوقيت السعودية</b>\n"
@@ -538,81 +565,73 @@ def build_summary_report(session_key, session_title, signals_data):
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
         ch_str = item["change_str"]
 
-        is_new = t not in last_summary_tickers
+        is_new = t not in last_summary_set
         new_mark = " 🆕" if is_new else ""
 
         lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f}{new_mark}")
 
-    last_summary_tickers = current_tickers
+    state["last_summary_tickers"] = current_tickers
     return "\n".join(lines)
 
 
-def run_individual_alerts(session_name, signals_data):
+def run_individual_alerts(session_name, signals_data, stock_state):
     seen_tickers = set()
 
-    top_gainers = signals_data.get('ta_topgainers', [])
-    send_stock_cards(session_name, top_gainers, "Top Gainers")
+    top_gainers = signals_data.get("ta_topgainers", [])
+    send_stock_cards(session_name, top_gainers, "Top Gainers", stock_state)
     for s in top_gainers:
-        t = str(s.get('row_key', '')).strip().upper()
+        t = str(s.get("row_key", "")).strip().upper()
         if t:
             seen_tickers.add(t)
 
-    new_highs = signals_data.get('ta_newhigh', [])
-    send_stock_cards(session_name, new_highs, "New High", skip_tickers=seen_tickers)
+    new_highs = signals_data.get("ta_newhigh", [])
+    send_stock_cards(session_name, new_highs, "New High", stock_state, skip_tickers=seen_tickers)
     for s in new_highs:
-        t = str(s.get('row_key', '')).strip().upper()
+        t = str(s.get("row_key", "")).strip().upper()
         if t:
             seen_tickers.add(t)
 
-    most_active = signals_data.get('ta_mostactive', [])
-    send_stock_cards(session_name, most_active, "Most Active", positive_only=True, skip_tickers=seen_tickers)
+    most_active = signals_data.get("ta_mostactive", [])
+    send_stock_cards(session_name, most_active, "Most Active", stock_state, positive_only=True, skip_tickers=seen_tickers)
     for s in most_active:
-        t = str(s.get('row_key', '')).strip().upper()
+        t = str(s.get("row_key", "")).strip().upper()
         if t:
             seen_tickers.add(t)
 
-    unusual_volume = signals_data.get('ta_unusualvolume', [])
-    send_stock_cards(session_name, unusual_volume, "Unusual Volume", positive_only=True, skip_tickers=seen_tickers)
+    unusual_volume = signals_data.get("ta_unusualvolume", [])
+    send_stock_cards(session_name, unusual_volume, "Unusual Volume", stock_state, positive_only=True, skip_tickers=seen_tickers)
 
 
-def main_loop():
-    print("🚀 تم تشغيل الرادار (التقرير المجمع والتنبيهات كل 3 دقائق)...")
-    was_open = False
-    last_summary_time = 0
+def run_once():
+    print("🚀 تشغيل دورة الرادار (دورة واحدة كل 3 دقائق عبر الجدولة)...")
+    state = load_state()
+    session_key, session_title = get_market_session_and_name()
 
-    while True:
-        session_key, session_title = get_market_session_and_name()
-        current_time_epoch = time.time()
+    if session_key:
+        if not state.get("was_open"):
+            send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
+            state["was_open"] = True
 
-        if session_key:
-            if not was_open:
-                send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
-                was_open = True
+        signals_data = fetch_all_signals()
 
-            signals_data = fetch_all_signals()
+        print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
+        report_message = build_summary_report(session_key, session_title, signals_data, state)
+        if report_message:
+            if send_telegram_message(report_message, parse_mode="HTML"):
+                print("✅ تم إرسال التقرير المجمع بنجاح.")
 
-            if current_time_epoch - last_summary_time >= 180:
-                print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
-                report_message = build_summary_report(session_key, session_title, signals_data)
-                if report_message:
-                    send_telegram_message(report_message, parse_mode="HTML")
-                    print("✅ تم إرسال التقرير المجمع بنجاح.")
-                last_summary_time = time.time()
+        print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
+        run_individual_alerts(session_key, signals_data, state.setdefault("stocks", {}))
+    else:
+        if state.get("was_open"):
+            send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
+            state["was_open"] = False
+            state["last_summary_tickers"] = []
+        print("😴 السوق مغلق حالياً. لا يوجد إرسال في هذه الدورة.")
 
-            print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
-            run_individual_alerts(session_key, signals_data)
-
-            print("💤 التحديث القادم بعد 3 دقائق...")
-            time.sleep(180)
-        else:
-            if was_open:
-                send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
-                was_open = False
-                last_summary_time = 0
-
-            print("😴 السوق مغلق حالياً. الفحص التنشيطي القادم بعد دقيقتين...")
-            time.sleep(120)
+    save_state(state)
+    print("✅ انتهت الدورة بنجاح.")
 
 
 if __name__ == "__main__":
-    main_loop()
+    run_once()
