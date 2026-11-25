@@ -4,7 +4,7 @@ import time
 import random
 import html
 from html.parser import HTMLParser
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import requests
 from requests.adapters import HTTPAdapter
@@ -604,10 +604,27 @@ def run_individual_alerts(session_name, signals_data, stock_state):
     send_stock_cards(session_name, unusual_volume, "Unusual Volume", stock_state, positive_only=True, skip_tickers=seen_tickers)
 
 
+def seconds_to_next_session_start():
+    ny_tz = pytz.timezone("America/New_York")
+    now_ny = datetime.now(ny_tz)
+    starts = [(4, 0), (9, 30), (16, 0)]
+    for day_offset in range(0, 8):
+        day = now_ny + timedelta(days=day_offset)
+        if day.weekday() >= 5:
+            continue
+        for h, m in starts:
+            cand = ny_tz.localize(datetime(day.year, day.month, day.day, h, m))
+            if cand > now_ny:
+                return (cand - now_ny).total_seconds()
+    return None
+
+
 def run_session_batch():
     print("🚀 تشغيل الرادار (تحديث كل 3 دقائق ضمن الجلسات الثلاث)...")
     start_time = time.time()
     state = load_state()
+    last_session_key = None
+    next_tick = start_time
 
     while True:
         elapsed = time.time() - start_time
@@ -621,32 +638,58 @@ def run_session_batch():
             if not state.get("was_open"):
                 send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
                 state["was_open"] = True
+            elif last_session_key and session_key != last_session_key:
+                send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
 
-            signals_data = fetch_all_signals()
+            if session_key != last_session_key:
+                next_tick = time.time()
+            last_session_key = session_key
 
-            print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
-            report_message = build_summary_report(session_key, session_title, signals_data, state)
-            if report_message:
-                if send_telegram_message(report_message, parse_mode="HTML"):
-                    print("✅ تم إرسال التقرير المجمع بنجاح.")
+            try:
+                signals_data = fetch_all_signals()
 
-            print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
-            run_individual_alerts(session_key, signals_data, state.setdefault("stocks", {}))
-            save_state(state)
+                print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
+                report_message = build_summary_report(session_key, session_title, signals_data, state)
+                if report_message:
+                    if send_telegram_message(report_message, parse_mode="HTML"):
+                        print("✅ تم إرسال التقرير المجمع بنجاح.")
 
-            remaining_to_cap = MAX_RUN_SECONDS - (time.time() - start_time)
-            if remaining_to_cap <= 0:
+                print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
+                run_individual_alerts(session_key, signals_data, state.setdefault("stocks", {}))
+                save_state(state)
+            except Exception as e:
+                print(f"❌ خطأ في الدورة الحالية (سيستمر الرادار): {e}")
+
+            now = time.time()
+            next_tick += INTERVAL_SECONDS
+            while next_tick <= now:
+                next_tick += INTERVAL_SECONDS
+
+            wake_at = next_tick
+            to_boundary = seconds_to_next_session_start()
+            if to_boundary is not None:
+                wake_at = min(next_tick, now + to_boundary + 0.2)
+
+            if wake_at - start_time >= MAX_RUN_SECONDS:
                 break
 
-            sleep_time = min(INTERVAL_SECONDS, remaining_to_cap)
-            print(f"💤 التحديث القادم بعد {int(sleep_time)} ثانية...")
-            time.sleep(sleep_time)
+            print(f"💤 التحديث القادم بعد {int(max(0, wake_at - time.time()))} ثانية...")
+            time.sleep(max(0, wake_at - time.time()))
         else:
             if state.get("was_open"):
                 send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
                 state["was_open"] = False
                 state["last_summary_tickers"] = []
                 save_state(state)
+
+            wait = seconds_to_next_session_start()
+            elapsed = time.time() - start_time
+            if wait is not None and elapsed + wait < MAX_RUN_SECONDS:
+                print(f"😴 السوق مغلق. الانتظار {int(wait)} ثانية حتى بداية الجلسة القادمة بالضبط.")
+                time.sleep(wait + 0.2)
+                last_session_key = None
+                continue
+
             print("😴 السوق مغلق حالياً. إنهاء التشغيل بانتظار الجلسة القادمة.")
             break
 
