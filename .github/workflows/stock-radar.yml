@@ -2,17 +2,21 @@ name: Stock Finviz & SEC Radar
 
 on:
   schedule:
-    - cron: '*/3 * * * *' # كل 3 دقائق (يتوقف السكربت تلقائياً خارج أوقات الجلسات)
+    # يبدأ كل ساعة من الاثنين إلى الجمعة لتغطية الجلسات الثلاث (04:00 حتى 20:00 بتوقيت نيويورك)
+    # وداخل السكربت يعمل التحديث كل 3 دقائق لمدة 55 دقيقة لكل دفعة ثم يخرج بأمان
+    - cron: '0 8-23 * * 1-5'
+    - cron: '0 0-2 * * 2-6'
+
   workflow_dispatch: # تشغيل يدوي في أي وقت
 
 concurrency:
   group: stock-radar
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 65
 
     steps:
       - name: Checkout Repository
@@ -41,5 +45,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           RADAR_STATE_FILE: radar_state.json
+          RADAR_INTERVAL_SECONDS: "180"
+          RADAR_MAX_RUN_SECONDS: "3300"
         run: |
           python main.py
