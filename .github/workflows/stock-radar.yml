@@ -2,26 +2,17 @@ name: Stock Finviz & SEC Radar
 
 on:
   schedule:
-    # يبدأ عدة مرات موزعة لتغطية الجلسات كاملة (توقيت UTC)
-    # Pre + بداية Main
-    - cron: '5 8 * * 1-5'      # ~11:00 ص بتوقيت السعودية
-    - cron: '5 12 * * 1-5'     # منتصف Main
-    - cron: '5 16 * * 1-5'     # نهاية Main + بداية Post
-    - cron: '5 20 * * 1-5'     # منتصف Post
-    # تغطية آخر جزء من Post + الليل (ينتقل لليوم التالي)
-    - cron: '5 0 * * 2-6'      # منتصف الليل تقريباً
-    - cron: '5 3 * * 2-6'      # احتياطي
-
+    - cron: '*/3 * * * *' # كل 3 دقائق (يتوقف السكربت تلقائياً خارج أوقات الجلسات)
   workflow_dispatch: # تشغيل يدوي في أي وقت
 
 concurrency:
   group: stock-radar
-  cancel-in-progress: true   # أي تشغيل جديد يلغي القديم عشان ما يتكرر
+  cancel-in-progress: true
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
-    timeout-minutes: 360     # أقصى مدة مسموحة (6 ساعات)
+    timeout-minutes: 3
 
     steps:
       - name: Checkout Repository
@@ -32,6 +23,14 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Cache Radar State
+        uses: actions/cache@v4
+        with:
+          path: radar_state.json
+          key: radar-state-${{ github.run_id }}
+          restore-keys: |
+            radar-state-
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
@@ -41,5 +40,6 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          RADAR_STATE_FILE: radar_state.json
         run: |
           python main.py
