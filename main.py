@@ -14,6 +14,8 @@ from googletrans import Translator
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 STATE_FILE = os.getenv("RADAR_STATE_FILE", "radar_state.json")
+INTERVAL_SECONDS = int(os.getenv("RADAR_INTERVAL_SECONDS", "180"))  # كل 3 دقائق
+MAX_RUN_SECONDS = int(os.getenv("RADAR_MAX_RUN_SECONDS", "3300"))    # 55 دقيقة كحد أقصى لكل تشغيل
 
 FINVIZ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -602,36 +604,55 @@ def run_individual_alerts(session_name, signals_data, stock_state):
     send_stock_cards(session_name, unusual_volume, "Unusual Volume", stock_state, positive_only=True, skip_tickers=seen_tickers)
 
 
-def run_once():
-    print("🚀 تشغيل دورة الرادار (دورة واحدة كل 3 دقائق عبر الجدولة)...")
+def run_session_batch():
+    print("🚀 تشغيل الرادار (تحديث كل 3 دقائق ضمن الجلسات الثلاث)...")
+    start_time = time.time()
     state = load_state()
-    session_key, session_title = get_market_session_and_name()
 
-    if session_key:
-        if not state.get("was_open"):
-            send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
-            state["was_open"] = True
+    while True:
+        elapsed = time.time() - start_time
+        if elapsed >= MAX_RUN_SECONDS:
+            print("⏱️ تم الوصول للحد الزمني الآمن للدفعة الحالية؛ سيتم استئنافها عبر الجدولة.")
+            break
 
-        signals_data = fetch_all_signals()
+        session_key, session_title = get_market_session_and_name()
 
-        print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
-        report_message = build_summary_report(session_key, session_title, signals_data, state)
-        if report_message:
-            if send_telegram_message(report_message, parse_mode="HTML"):
-                print("✅ تم إرسال التقرير المجمع بنجاح.")
+        if session_key:
+            if not state.get("was_open"):
+                send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
+                state["was_open"] = True
 
-        print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
-        run_individual_alerts(session_key, signals_data, state.setdefault("stocks", {}))
-    else:
-        if state.get("was_open"):
-            send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
-            state["was_open"] = False
-            state["last_summary_tickers"] = []
-        print("😴 السوق مغلق حالياً. لا يوجد إرسال في هذه الدورة.")
+            signals_data = fetch_all_signals()
+
+            print(f"⏳ جاري إنشاء وإرسال التقرير المجمع لـ ({session_title})...")
+            report_message = build_summary_report(session_key, session_title, signals_data, state)
+            if report_message:
+                if send_telegram_message(report_message, parse_mode="HTML"):
+                    print("✅ تم إرسال التقرير المجمع بنجاح.")
+
+            print(f"⏳ فحص وإرسال التنبيهات الفردية لـ ({session_title})...")
+            run_individual_alerts(session_key, signals_data, state.setdefault("stocks", {}))
+            save_state(state)
+
+            remaining_to_cap = MAX_RUN_SECONDS - (time.time() - start_time)
+            if remaining_to_cap <= 0:
+                break
+
+            sleep_time = min(INTERVAL_SECONDS, remaining_to_cap)
+            print(f"💤 التحديث القادم بعد {int(sleep_time)} ثانية...")
+            time.sleep(sleep_time)
+        else:
+            if state.get("was_open"):
+                send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
+                state["was_open"] = False
+                state["last_summary_tickers"] = []
+                save_state(state)
+            print("😴 السوق مغلق حالياً. إنهاء التشغيل بانتظار الجلسة القادمة.")
+            break
 
     save_state(state)
-    print("✅ انتهت الدورة بنجاح.")
+    print("✅ انتهى التشغيل بنجاح.")
 
 
 if __name__ == "__main__":
-    run_once()
+    run_session_batch()
