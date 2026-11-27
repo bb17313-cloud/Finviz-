@@ -1,58 +1,10 @@
-name: name: Stock Finviz & SEC Radar
+name: Stock Finviz & SEC Radar
 
 on:
   schedule:
+    # كل 20 دقيقة (دقائق 7 و27 و47) لتجنب ازدحام بداية الساعة؛ concurrency يضمن تشغيلاً واحداً فعّالاً وآخر منتظراً فقط
     - cron: '7-59/20 8-23 * * 1-5'
     - cron: '7-59/20 0-1 * * 2-6'
-  workflow_dispatch:
-
-concurrency:
-  group: stock-radar
-  cancel-in-progress: false
-
-jobs:
-  run-radar:
-    runs-on: ubuntu-latest
-    timeout-minutes: 65
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Cache Radar State
-        uses: actions/cache@v4
-        with:
-          path: radar_state.json
-          key: radar-state-${{ github.run_id }}
-          restore-keys: |
-            radar-state-
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests pytz googletrans==4.0.0-rc1
-
-      - name: Run Radar Script
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          RADAR_STATE_FILE: radar_state.json
-          RADAR_INTERVAL_SECONDS: "180"
-          RADAR_MAX_RUN_SECONDS: "3300"
-        run: |
-          python main.pyStock Finviz & SEC Radar
-
-on:
-  schedule:
-    # يبدأ كل ساعة من الاثنين إلى الجمعة لتغطية الجلسات الثلاث (04:00 حتى 20:00 بتوقيت نيويورك)
-    # وداخل السكربت يعمل التحديث كل 3 دقائق لمدة 55 دقيقة لكل دفعة ثم يخرج بأمان
-    - cron: '0 8-23 * * 1-5'
-    - cron: '0 0-2 * * 2-6'
 
   workflow_dispatch: # تشغيل يدوي في أي وقت
 
